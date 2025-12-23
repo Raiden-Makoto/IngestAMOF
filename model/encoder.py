@@ -4,7 +4,7 @@ from layers.RBFExpansion import RBFExpansion
 from layers.DGNNLayer import DGNNLayer
 
 class CrystalEncoder(nn.Module):
-    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=2):
+    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=2, use_checkpoint=False):
         super().__init__()
         self.hidden_dim = hidden_dim
         

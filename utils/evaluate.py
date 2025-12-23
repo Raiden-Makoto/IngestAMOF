@@ -22,7 +22,7 @@ NUM_SAMPLES = 5
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 # Model Config (Must match training!)
-HIDDEN_DIM = 64
+HIDDEN_DIM = 128
 LATENT_DIM = 64
 NUM_LAYERS = 2
 TIMESTEPS = 1000
@@ -180,7 +180,9 @@ def evaluate():
         # C. Save Outputs
         for i in range(NUM_SAMPLES):
             filename = os.path.join(OUTPUT_DIR, f"gen_mof_{i}.cif")
-            save_cif(generated_coords[i], atom_types[i], lattice[i], filename)
+            # Shift coordinates back from [-0.5, 0.5] to [0, 1] for CIF file format
+            coords_for_cif = generated_coords[i] + 0.5
+            save_cif(coords_for_cif, atom_types[i], lattice[i], filename)
 
     print(f"\n✅ Generation Complete. Check the '{OUTPUT_DIR}' folder.")
 

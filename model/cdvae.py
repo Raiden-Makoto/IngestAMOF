@@ -13,9 +13,10 @@ class CrystalDiffusionVAE(nn.Module):
         self.decoder = DenoisingDecoder(hidden_dim, latent_dim, num_layers, use_checkpoint=False)
         
         # --- Diffusion Noise Schedule (Linear) ---
+        # Reduced beta_end to increase signal-to-noise ratio (easier task for small model)
         self.num_timesteps = num_timesteps
         beta_start = 0.0001
-        beta_end = 0.02
+        beta_end = 0.01  # Reduced from 0.02 to increase signal-to-noise ratio
         betas = torch.linspace(beta_start, beta_end, num_timesteps)
         
         # Pre-calculate diffusion terms to save speed

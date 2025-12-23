@@ -18,6 +18,9 @@ class MOFDataset(Dataset):
     def __getitem__(self, idx):
         with open(self.files[idx], 'rb') as f:
             data = pickle.load(f)
+        # Shift fractional coordinates from [0, 1] to [-0.5, 0.5] to center them at zero
+        # This matches the noise distribution (mean=0) and helps training stability
+        data['frac_coords'] = data['frac_coords'] - 0.5
         return data
 
 def collate_mols(batch):

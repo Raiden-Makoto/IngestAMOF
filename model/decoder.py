@@ -5,17 +5,17 @@ from layers.RBFExpansion import RBFExpansion
 from layers.CGNNLayer import CGNNLayer
 
 class DenoisingDecoder(nn.Module):
-    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=3, use_checkpoint=False):
+    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=3, use_checkpoint=False, rbf_bins=60, rbf_vmin=0, rbf_vmax=30):
         super().__init__()
         
         # Embeddings
         self.atom_embedding = nn.Embedding(100, hidden_dim, padding_idx=0)
         self.time_embedding = SinusoidalTimeEmbeddings(hidden_dim)
         self.latent_proj = nn.Linear(latent_dim, hidden_dim) # Project z to match hidden size
-        self.rbf = RBFExpansion(vmin=0, vmax=30, bins=60)
+        self.rbf = RBFExpansion(vmin=rbf_vmin, vmax=rbf_vmax, bins=rbf_bins)
         
         # Layers
-        self.layers = nn.ModuleList([CGNNLayer(hidden_dim) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([CGNNLayer(hidden_dim, rbf_bins=rbf_bins) for _ in range(num_layers)])
         
         # Output Heads
         # 1. Predict Coordinate Shift (Noise)

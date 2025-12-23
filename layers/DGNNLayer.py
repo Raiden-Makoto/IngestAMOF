@@ -6,11 +6,11 @@ class DGNNLayer(nn.Module):
     """
     A single layer of Message Passing for dense graphs.
     """
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, rbf_bins=60):
         super().__init__()
         # Message function: Process neighbor info + edge info
         self.message_mlp = nn.Sequential(
-            nn.Linear(hidden_dim * 2 + 40, hidden_dim), # *2 for node+neighbor, +40 for RBF
+            nn.Linear(hidden_dim * 2 + rbf_bins, hidden_dim), # *2 for node+neighbor, +rbf_bins for RBF
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )

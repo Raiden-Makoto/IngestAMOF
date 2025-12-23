@@ -4,16 +4,16 @@ from layers.RBFExpansion import RBFExpansion
 from layers.DGNNLayer import DGNNLayer
 
 class CrystalEncoder(nn.Module):
-    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=2, use_checkpoint=False):
+    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=2, use_checkpoint=False, rbf_bins=60, rbf_vmin=0, rbf_vmax=30):
         super().__init__()
         self.hidden_dim = hidden_dim
         
         # 1. Embeddings
         self.atom_embedding = nn.Embedding(100, hidden_dim, padding_idx=0)
-        self.rbf = RBFExpansion(vmin=0, vmax=30, bins=60)
+        self.rbf = RBFExpansion(vmin=rbf_vmin, vmax=rbf_vmax, bins=rbf_bins)
         
         # 2. GNN Layers
-        self.layers = nn.ModuleList([DGNNLayer(hidden_dim) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([DGNNLayer(hidden_dim, rbf_bins=rbf_bins) for _ in range(num_layers)])
         
         # 3. Output Heads (Mean and Variance for VAE)
         self.fc_mu = nn.Linear(hidden_dim, latent_dim)
@@ -50,7 +50,7 @@ class CrystalEncoder(nn.Module):
         # -----------------------
         
         # 3. Expand Distances (RBF)
-        rbf_edges = self.rbf(dist) # (B, N, N, 40)
+        rbf_edges = self.rbf(dist) # (B, N, N, rbf_bins)
         
         # 4. Initial Node Embeddings
         h = self.atom_embedding(atom_types) # (B, N, H)

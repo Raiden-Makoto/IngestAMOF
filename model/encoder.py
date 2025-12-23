@@ -10,7 +10,7 @@ class CrystalEncoder(nn.Module):
         
         # 1. Embeddings
         self.atom_embedding = nn.Embedding(100, hidden_dim, padding_idx=0)
-        self.rbf = RBFExpansion(bins=40)
+        self.rbf = RBFExpansion(vmin=0, vmax=30, bins=60)
         
         # 2. GNN Layers
         self.layers = nn.ModuleList([DGNNLayer(hidden_dim) for _ in range(num_layers)])

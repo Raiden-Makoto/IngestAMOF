@@ -12,7 +12,7 @@ class DenoisingDecoder(nn.Module):
         self.atom_embedding = nn.Embedding(100, hidden_dim, padding_idx=0)
         self.time_embedding = SinusoidalTimeEmbeddings(hidden_dim)
         self.latent_proj = nn.Linear(latent_dim, hidden_dim) # Project z to match hidden size
-        self.rbf = RBFExpansion(bins=40)
+        self.rbf = RBFExpansion(vmin=0, vmax=30, bins=60)
         
         # Layers
         self.layers = nn.ModuleList([CGNNLayer(hidden_dim) for _ in range(num_layers)])

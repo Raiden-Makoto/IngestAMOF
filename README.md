@@ -1,2 +1,1 @@
-# IngestAMOF
-Crystal Diffusion Variational Autoencoder for Inverse Design of Metal-Organic Frameworks for drug delivry
+# Crystal Diffusion Variational Autoencoder for Generative Design of Superionic Conductors

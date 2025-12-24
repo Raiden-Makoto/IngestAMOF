@@ -3,21 +3,56 @@ import os
 import pickle
 from torch.utils.data import Dataset, DataLoader #type: ignore
 from torch.nn.utils.rnn import pad_sequence #type: ignore
+from pymatgen.core import Structure #type: ignore
 
-class MOFDataset(Dataset):
+class BatteryDataset(Dataset):
     def __init__(self, data_dir):
         """
         Reads the .pkl files from your processed directory.
+        Supports two formats:
+        1. Directory with individual .pkl files (processed MOF graphs)
+        2. Single .pkl file with list of pymatgen Structure objects (battery materials)
         """
-        self.files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.pkl')]
-        print(f"Dataset loaded: {len(self.files)} crystals found.")
+        if os.path.isfile(data_dir):
+            # Single file format (battery materials)
+            with open(data_dir, 'rb') as f:
+                self.data_list = pickle.load(f)
+            self.is_single_file = True
+            print(f"Dataset loaded: {len(self.data_list)} crystals from {data_dir}")
+        else:
+            # Directory format (processed MOF graphs)
+            self.files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.pkl')]
+            self.is_single_file = False
+            print(f"Dataset loaded: {len(self.files)} crystals found in {data_dir}")
 
     def __len__(self):
+        if self.is_single_file:
+            return len(self.data_list)
         return len(self.files)
 
     def __getitem__(self, idx):
-        with open(self.files[idx], 'rb') as f:
-            data = pickle.load(f)
+        if self.is_single_file:
+            # Battery materials format: list of dicts with 'structure' (pymatgen Structure)
+            item = self.data_list[idx]
+            structure = item['structure']
+            
+            # Convert pymatgen Structure to expected format
+            atom_types = torch.tensor([sp.Z for sp in structure.species], dtype=torch.long)
+            frac_coords = torch.tensor(structure.frac_coords, dtype=torch.float32)
+            lattice = torch.tensor(structure.lattice.matrix, dtype=torch.float32)
+            mp_id = item.get('id', f'battery_{idx}')
+            
+            data = {
+                'atom_types': atom_types,
+                'frac_coords': frac_coords,
+                'lattice': lattice,
+                'mp_id': mp_id
+            }
+        else:
+            # Processed MOF graph format
+            with open(self.files[idx], 'rb') as f:
+                data = pickle.load(f)
+        
         # Shift fractional coordinates from [0, 1] to [-0.5, 0.5] to center them at zero
         # This matches the noise distribution (mean=0) and helps training stability
         data['frac_coords'] = data['frac_coords'] - 0.5
@@ -56,7 +91,7 @@ def collate_mols(batch):
     }
 
 def get_dataloader(data_dir, batch_size=32, shuffle=True):
-    dataset = MOFDataset(data_dir)
+    dataset = BatteryDataset(data_dir)
     return DataLoader(
         dataset, 
         batch_size=batch_size, 

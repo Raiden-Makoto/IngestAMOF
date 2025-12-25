@@ -74,10 +74,16 @@ class EGNNLayer(nn.Module):
 
     def forward(self, h, frac_coords, lattice, mask):
         # A. Get Vectors and Distances
-        # vectors: (B, N, N, 3)
-        # dist:    (B, N, N) -- Note: squeezed the last dim
+        # vectors: (B, N, N, 3) <-- These have length = distance
+        # dist:    (B, N, N)
         vectors, dist = get_periodic_diff(frac_coords, lattice)
-        dist = dist.squeeze(-1) 
+        dist = dist.squeeze(-1)
+        
+        # --- FIX 1: NORMALIZE VECTORS ---
+        # Turn "Distance Vectors" into "Unit Direction Vectors"
+        # We add 1e-6 to avoid dividing by zero if atoms overlap
+        unit_vectors = vectors / (dist.unsqueeze(-1) + 1e-6)
+        # --------------------------------
         
         # B. RBF Expansion (Scalar Info)
         rbf_feat = self.rbf_fn(dist) # (B, N, N, 32)
@@ -94,16 +100,16 @@ class EGNNLayer(nn.Module):
         # D. Update Coords (Using Vectors with Softmax Attention)
         coord_weights = self.coord_mlp(m_ij)  # (B, N, N, 1)
         
-        # --- USE SOFTMAX INSTEAD OF SUM ---
-        # This acts like "Attention". It normalizes the weights so they sum to ~1.
-        # We mask out non-neighbors first (-1e9)
+        # Softmax Attention (Keep this from last time)
         mask_matrix = mask.unsqueeze(1) * mask.unsqueeze(2)  # (B, N, N)
         coord_weights = coord_weights.masked_fill(mask_matrix.unsqueeze(-1) == 0, -1e9)
+        attn = torch.softmax(coord_weights, dim=2)
         
-        attn = torch.softmax(coord_weights, dim=2)  # Normalize weights over neighbors
-        
-        # Weighted sum using stable attention weights
-        coord_update = torch.sum(attn * vectors, dim=2)
+        # --- USE UNIT VECTORS HERE ---
+        # Old: sum(attn * vectors)  <-- The "Lever Arm" Bug
+        # New: sum(attn * unit_vectors)
+        coord_update = torch.sum(attn * unit_vectors, dim=2)
+        # -----------------------------
         
         # Still clamp it for safety (physical constraint: max 0.5 Å per layer)
         coord_update = torch.clamp(coord_update, min=-0.5, max=0.5)

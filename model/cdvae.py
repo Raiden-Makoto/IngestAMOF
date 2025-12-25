@@ -109,4 +109,4 @@ class CrystalDiffusionVAE(nn.Module):
         target_noise_cart = torch.bmm(target_noise_frac, lattice)
         target_noise_cart = target_noise_cart * mask_3d
 
-        return pred_noise_cart, target_noise_cart, mu, log_var
+        return pred_noise_cart, target_noise_cart, mu, log_var, t

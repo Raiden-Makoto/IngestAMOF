@@ -24,7 +24,7 @@ CHECKPOINT_DIR = "checkpoints"
 BATCH_SIZE = 16        # Safe for 10GB Unified Memory
 GRAD_ACCUM_STEPS = 8   # Accumulate gradients over 8 batches (effective batch size = 16 * 8 = 128)
 LR = 1e-4              # Learning Rate
-EPOCHS = 150           # Total passes through data
+EPOCHS = 100           # Total passes through data
 KL_WEIGHT = 1.0       # Weight for KL Divergence (keeps latent space neat)
 GRAD_CLIP = 1.0        # Prevents exploding gradients
 
@@ -110,7 +110,7 @@ def train():
             # The EGNN needs 'frac_coords' to calculate periodic shifts internally,
             # BUT the model output 'pred_noise' is in Real Angstroms (Cartesian).
             # The model also converts 'target_noise' from fractional to Cartesian.
-            pred_noise_cart, target_noise_cart, mu, log_var = model(
+            pred_noise_cart, target_noise_cart, mu, log_var, t = model(
                 atom_types, frac_coords, lattice, mask
             )
             
@@ -118,13 +118,27 @@ def train():
             # CRITICAL: Normalize by total number of atoms, NOT batch size
             # This prevents batches with more atoms from having artificially higher loss
             
-            # 1. Reconstruction Loss (MSE between Predicted Noise and Real Noise)
-            # Both pred_noise_cart and target_noise_cart are in Cartesian (Angstroms)
-            # Normalize by total number of valid atoms across the entire batch
-            num_valid_atoms = torch.sum(mask)  # Total atoms in batch (not batch size!)
-            # Calculate loss per atom (Angstroms vs Angstroms)
-            # Using 'sum' reduction then dividing by num_valid_atoms gives per-atom loss
-            recon_loss = F.mse_loss(pred_noise_cart, target_noise_cart, reduction='sum') / (num_valid_atoms + 1e-6)
+            # 1. Get alpha_bar for the current timesteps (for SNR weighting)
+            # t is shape (Batch,)
+            alpha_bar_t = model.alphas_cumprod[t].to(DEVICE)
+            
+            # 2. Calculate Raw Huber Loss per atom
+            # shape: (Batch, N, 3) -> (Batch, N)
+            loss_per_atom = F.smooth_l1_loss(pred_noise_cart, target_noise_cart, reduction='none', beta=1.0).sum(dim=-1)
+            # Average over atoms in each graph
+            num_atoms_per_graph = mask.sum(dim=1)  # (Batch,)
+            loss_per_graph = loss_per_atom.sum(dim=1) / (num_atoms_per_graph + 1e-6)  # (Batch,)
+            
+            # --- THE FIX: WEIGHT BY SIGNAL STRENGTH (SNR Weighting) ---
+            # We down-weight the loss when noise is high (alpha_bar is small)
+            # This prevents the "High Noise" batches from spiking the loss
+            # Min-SNR weighting: weight = alpha_bar / (1 - alpha_bar)
+            weight = alpha_bar_t / (1 - alpha_bar_t).clamp(min=1e-6)  # SNR weighting
+            weight = torch.clamp(weight, max=5.0)  # Clip weights to be safe
+            
+            # Apply weight and average over batch
+            weighted_loss_per_graph = loss_per_graph * weight  # (Batch,)
+            recon_loss = weighted_loss_per_graph.mean()  # Scalar
             
             # 2. KL Divergence (Regularization)
             # Analytical KL for Normal Distributions: sum(1 + log(var) - mu^2 - var)

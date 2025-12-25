@@ -1,6 +1,5 @@
 from .RBFExpansion import RBFExpansion
-from .DGNNLayer import DGNNLayer
-from .CGNNLayer import CGNNLayer
+from .EGNNLayer import EGNNLayer
 from .SineEmbed import SinusoidalTimeEmbeddings
 
-__all__ = ["RBFExpansion", "DGNNLayer", "CGNNLayer", "SinusoidalTimeEmbeddings"]
+__all__ = ["RBFExpansion", "EGNNLayer", "SinusoidalTimeEmbeddings"]

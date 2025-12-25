@@ -23,7 +23,7 @@ CHECKPOINT_DIR = "checkpoints"
 # Training Config
 BATCH_SIZE = 16        # Safe for 10GB Unified Memory
 GRAD_ACCUM_STEPS = 8   # Accumulate gradients over 8 batches (effective batch size = 16 * 8 = 128)
-LR = 1e-3              # Learning Rate
+LR = 1e-4              # Learning Rate
 EPOCHS = 150           # Total passes through data
 KL_WEIGHT = 1.0       # Weight for KL Divergence (keeps latent space neat)
 GRAD_CLIP = 1.0        # Prevents exploding gradients
@@ -47,7 +47,7 @@ def train():
 
     # 2. Load Data and Split (80% train, 20% test - but we only use train)
     # 'processed_graphs' is the folder created by process_mofs_atomic
-    full_dataset = BatteryDataset("data/battery_materials.pkl")
+    full_dataset = BatteryDataset("data/battery_materials_clean.pkl")
     total_size = len(full_dataset)
     train_size = int(0.8 * total_size)
     test_size = total_size - train_size
@@ -56,7 +56,7 @@ def train():
     train_dataset, _ = random_split(
         full_dataset, 
         [train_size, test_size],
-        generator=torch.Generator().manual_seed(42)  # For reproducibility
+        generator=torch.Generator().manual_seed(67)  # For reproducibility
     )
     
     # Create dataloader only for training data
@@ -95,8 +95,10 @@ def train():
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{EPOCHS}")
         
         for batch_idx, batch in enumerate(pbar):
-            # --- MEMORY FIX 1: Use set_to_none=True to delete grads instead of zeroing ---
-            optimizer.zero_grad(set_to_none=True)  # SAVES MEMORY: deletes grads instead of zeroing them
+            # Zero gradients at the start of each accumulation cycle
+            if batch_idx % GRAD_ACCUM_STEPS == 0:
+                optimizer.zero_grad(set_to_none=True)
+            
             # Move Data to Device
             atom_types = batch['atom_types'].to(DEVICE)
             frac_coords = batch['frac_coords'].to(DEVICE)
@@ -105,29 +107,42 @@ def train():
             
             # --- FORWARD PASS ---
             # Model handles encoding, sampling z, adding noise, and decoding
-            pred_noise, target_noise, mu, log_var = model(
+            # The EGNN needs 'frac_coords' to calculate periodic shifts internally,
+            # BUT the model output 'pred_noise' is in Real Angstroms (Cartesian).
+            # The model also converts 'target_noise' from fractional to Cartesian.
+            pred_noise_cart, target_noise_cart, mu, log_var = model(
                 atom_types, frac_coords, lattice, mask
             )
             
             # --- LOSS CALCULATION ---
+            # CRITICAL: Normalize by total number of atoms, NOT batch size
+            # This prevents batches with more atoms from having artificially higher loss
+            
             # 1. Reconstruction Loss (MSE between Predicted Noise and Real Noise)
-            # We must normalize by the number of valid atoms (sum of mask)
-            # Note: The output is already masked inside the model, but we double-check mask sum
-            num_valid_atoms = torch.sum(mask)
-            recon_loss = F.mse_loss(pred_noise, target_noise, reduction='sum') / (num_valid_atoms + 1e-6)
+            # Both pred_noise_cart and target_noise_cart are in Cartesian (Angstroms)
+            # Normalize by total number of valid atoms across the entire batch
+            num_valid_atoms = torch.sum(mask)  # Total atoms in batch (not batch size!)
+            # Calculate loss per atom (Angstroms vs Angstroms)
+            # Using 'sum' reduction then dividing by num_valid_atoms gives per-atom loss
+            recon_loss = F.mse_loss(pred_noise_cart, target_noise_cart, reduction='sum') / (num_valid_atoms + 1e-6)
             
             # 2. KL Divergence (Regularization)
-            # Analytical KL for Normal Distributions
-            # sum(1 + log(var) - mu^2 - var)
+            # Analytical KL for Normal Distributions: sum(1 + log(var) - mu^2 - var)
+            # KL divergence is per-sample (each crystal has its own latent distribution)
+            # So we normalize by batch size (number of samples), not number of atoms
             kld = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-            # Normalize by batch size and apply weight
-            kl_loss = (kld / atom_types.size(0)) * KL_WEIGHT
+            kl_loss = (kld / atom_types.size(0)) * KL_WEIGHT  # Normalize by batch size (correct for KL)
             
             # Total Loss - scale by accumulation steps to average over accumulated batches
             loss = (recon_loss + kl_loss) / GRAD_ACCUM_STEPS
             
             # --- BACKPROPAGATION (Accumulate Gradients) ---
             loss.backward()
+            
+            # --- ADD THIS LINE (The Seatbelt) ---
+            # This ensures no single update is larger than 1.0
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # ------------------------------------
             
             # --- LOGGING ---
             # Store loss values before deletion for logging
@@ -142,15 +157,13 @@ def train():
             is_last_batch = (batch_idx + 1) == len(dataloader)
             
             if is_accumulation_step or is_last_batch:
-                # Clip Gradients (Crucial for GNN stability)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-                
                 # Take optimizer step (this uses accumulated gradients)
                 optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
             
             # --- MEMORY FIX 2: DELETE TENSORS ---
             # Explicitly delete heavy variables to free graph references
-            del pred_noise, target_noise, mu, log_var, loss, recon_loss, kl_loss, kld
+            del pred_noise_cart, target_noise_cart, mu, log_var, loss, recon_loss, kl_loss, kld
             
             # --- MEMORY FIX 3: Force Apple Silicon to clear the cache ---
             if torch.backends.mps.is_available():

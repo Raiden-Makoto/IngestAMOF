@@ -4,13 +4,17 @@ import numpy as np #type: ignore
 from torch.utils.checkpoint import checkpoint #type: ignore
 from model.encoder import CrystalEncoder
 from model.decoder import DenoisingDecoder
+from layers.SineEmbed import SinusoidalTimeEmbeddings
 
 class CrystalDiffusionVAE(nn.Module):
-    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=3, num_timesteps=1000, use_checkpoint=True, rbf_bins=32, rbf_vmin=0, rbf_vmax=8.0):
+    def __init__(self, hidden_dim=128, latent_dim=64, num_layers=3, num_timesteps=1000, use_checkpoint=True, rbf_bins=32, rbf_vmin=0, rbf_vmax=8.0, num_freqs=3):
         super().__init__()
         self.use_checkpoint = use_checkpoint
-        self.encoder = CrystalEncoder(hidden_dim, latent_dim, num_layers, use_checkpoint=False, rbf_bins=rbf_bins, rbf_vmin=rbf_vmin, rbf_vmax=rbf_vmax)
-        self.decoder = DenoisingDecoder(hidden_dim, latent_dim, num_layers, use_checkpoint=False, rbf_bins=rbf_bins, rbf_vmin=rbf_vmin, rbf_vmax=rbf_vmax)
+        self.encoder = CrystalEncoder(hidden_dim, latent_dim, num_layers)
+        self.decoder = DenoisingDecoder(hidden_dim, latent_dim, num_layers)
+        
+        # Time embedding for decoder (64 dim as expected by decoder)
+        self.time_embedding = SinusoidalTimeEmbeddings(64)
         
         # --- Diffusion Noise Schedule (Linear) ---
         # Reduced beta_end to increase signal-to-noise ratio (easier task for small model)
@@ -64,34 +68,45 @@ class CrystalDiffusionVAE(nn.Module):
         # Pick a random time 't' for every crystal in the batch
         t = torch.randint(0, self.num_timesteps, (batch_size,), device=device).long()
         
-        # Generate random noise (epsilon)
-        target_noise = torch.randn_like(frac_coords)
+        # Generate time embedding for decoder (64 dim)
+        t_emb = self.time_embedding(t.float())
         
-        # Create the Noisy Coords (x_t)
+        # Generate random noise (epsilon) in fractional coordinates
+        target_noise_frac = torch.randn_like(frac_coords)
+        
+        # Create the Noisy Coords (x_t) in fractional space
         # x_t = signal * x_0 + noise_factor * noise
         # We use the buffers we defined in __init__
         noise_level = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1)
         signal_level = self.sqrt_alphas_cumprod[t].view(-1, 1, 1)
         
-        noisy_coords = signal_level * frac_coords + noise_level * target_noise
+        noisy_coords = signal_level * frac_coords + noise_level * target_noise_frac
         
         # Apply Mask (Don't noise the padding!)
         mask_3d = mask.unsqueeze(-1).float()
         noisy_coords = noisy_coords * mask_3d
-        target_noise = target_noise * mask_3d
+        target_noise_frac = target_noise_frac * mask_3d
 
         # 3. DECODE (Predict Noise)
         # Ask the model: "Given this mess (noisy_coords) and the blueprint (z), find the noise."
+        # The decoder returns noise in CARTESIAN (Angstroms)
         if self.use_checkpoint and self.training:
-            pred_noise, pred_types = checkpoint(
+            pred_noise_cart, pred_types = checkpoint(
                 self.decoder,
-                atom_types, noisy_coords, lattice, mask, t, z,
+                atom_types, noisy_coords, lattice, mask, t_emb, z,
                 use_reentrant=False
             )
         else:
-            pred_noise, pred_types = self.decoder(atom_types, noisy_coords, lattice, mask, t, z)
+            pred_noise_cart, pred_types = self.decoder(atom_types, noisy_coords, lattice, mask, t_emb, z)
         
         # Mask output again to be safe
-        pred_noise = pred_noise * mask_3d
+        pred_noise_cart = pred_noise_cart * mask_3d
+        
+        # 4. Convert target_noise from fractional to Cartesian (Angstroms)
+        # target_noise_frac: (B, N, 3) in fractional coordinates
+        # lattice: (B, 3, 3)
+        # Convert: target_noise_cart = target_noise_frac @ lattice
+        target_noise_cart = torch.bmm(target_noise_frac, lattice)
+        target_noise_cart = target_noise_cart * mask_3d
 
-        return pred_noise, target_noise, mu, log_var
+        return pred_noise_cart, target_noise_cart, mu, log_var

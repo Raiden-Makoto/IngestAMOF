@@ -76,30 +76,45 @@ NUM_LAYERS = 3
 NUM_TIMESTEPS = 1000
 
 # --- HELPER: POST-PROCESSING ---
+def get_element_mapping():
+    """
+    Reconstructs the element mapping from the dataset (alphabetical by symbol).
+    This MUST match the mapping used during training.
+    """
+    import pickle
+    with open("data/battery_materials_clean.pkl", "rb") as f:
+        data = pickle.load(f)
+    
+    # Collect all unique elements seen during training
+    all_elements = set()
+    for entry in data:
+        for site in entry['structure']:
+            all_elements.add(site.specie.symbol)
+    
+    # Sort them alphabetically (This is how the dataset mapping works)
+    sorted_elements = sorted(list(all_elements))
+    return sorted_elements
+
+# Cache the mapping to avoid reloading every time
+_ELEMENT_MAPPING = None
+
 def tensor_to_structure(atom_types, frac_coords, lattice_matrix):
     """
     Converts model outputs back to a Pymatgen Structure.
+    Uses the actual dataset mapping (alphabetical by element symbol).
     """
-    # 1. Map atom types (0, 1, 2...) back to elements
-    # You need the same mapping from your dataset!
-    # For batteries, common elements: Li, O, P, S, La, Zr...
-    # If you lost the mapping, we can guess or use a dummy map.
-    # ideally load 'atom_mapping.pkl' if you saved it.
+    global _ELEMENT_MAPPING
+    if _ELEMENT_MAPPING is None:
+        _ELEMENT_MAPPING = get_element_mapping()
     
-    # For now, let's assume a generic mapping or use placeholders if unknown
-    # This is just for visualization
-    known_elements = [
-        "Li", "O", "P", "S", "La", "Zr", "Ti", "Al", "Ge", "Si", 
-        "Co", "Ni", "Mn", "Fe", "Cu", "Zn"
-    ]
-    
+    # Map atom types to elements using the correct dataset mapping
     species = []
     for t in atom_types:
         idx = int(t.item())
-        if idx < len(known_elements):
-            species.append(known_elements[idx])
+        if 0 <= idx < len(_ELEMENT_MAPPING):
+            species.append(_ELEMENT_MAPPING[idx])
         else:
-            species.append("X") # Unknown placeholder
+            species.append("X")  # Unknown placeholder (shouldn't happen)
 
     # 2. Create Lattice
     # lattice_matrix is (3, 3)
@@ -150,12 +165,11 @@ def generate(checkpoint_epoch=None):
     num_samples = 5
     print(f"Generating {num_samples} crystal candidates...")
     
-    # Random atom counts (e.g. 20 atoms)
-    num_atoms = 20
+    # The "Standard Battery" Recipe (Li3PS4)
+    # 9 Li + 3 P + 12 S = 24 Atoms (Ratio 3:1:4)
+    num_atoms = 24
     
     # Calculate lattice size based on target density
-    # OLD: 10.0 Angstroms (Too big, creates "Soup")
-    # NEW: Calculate based on Density
     # Solid State Battery density is roughly 0.07 - 0.1 atoms/A^3
     target_density = 0.08  # atoms per cubic Angstrom
     vol_per_atom = 1.0 / target_density
@@ -166,7 +180,22 @@ def generate(checkpoint_epoch=None):
     
     dummy_lattice = torch.eye(3).unsqueeze(0).to(DEVICE) * box_len
     dummy_lattice = dummy_lattice.repeat(num_samples, 1, 1)  # Batch of lattices
-    atom_types = torch.randint(1, 10, (num_samples, num_atoms), device=DEVICE)  # Random types (1-9, avoid 0)
+    
+    # --- SUPERIONIC COMPOSITION ---
+    # Using the actual IDs from the dataset mapping:
+    # Li = 36, P = 49, S = 60
+    li_id = 36  # Lithium
+    p_id = 49   # Phosphorus (Host framework)
+    s_id = 60   # Sulfur (Anion)
+    
+    # Create a list of 24 atoms: 9 Li, 3 P, 12 S (Li3PS4 ratio)
+    comp_list = [li_id]*9 + [p_id]*3 + [s_id]*12
+    
+    # Convert to tensor and repeat for batch
+    type_tensor = torch.tensor(comp_list, dtype=torch.long, device=DEVICE)  # Length 24
+    atom_types = type_tensor.unsqueeze(0).repeat(num_samples, 1)  # Shape (Batch, 24)
+    # -------------------------
+    
     mask = torch.ones((num_samples, num_atoms), dtype=torch.bool, device=DEVICE)
     
     # 3. Sample Latent Space (z) - random latent vectors

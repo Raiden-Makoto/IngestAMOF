@@ -1,4 +1,5 @@
 import os
+import shutil
 import warnings
 from chgnet.model import StructOptimizer # <-- The correct class for moving atoms
 from pymatgen.core import Structure
@@ -58,6 +59,12 @@ def relax_crystals():
 
         except Exception as e:
             print(f"  --> Failed on {filename}: {e}")
+    
+    # Clean up: Delete generated_batteries folder to save space
+    if os.path.exists(INPUT_DIR):
+        print(f"\n🧹 Cleaning up: Deleting {INPUT_DIR} to save space...")
+        shutil.rmtree(INPUT_DIR)
+        print(f"✅ Deleted {INPUT_DIR}")
 
 if __name__ == "__main__":
     relax_crystals()
